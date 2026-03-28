@@ -1127,6 +1127,7 @@ class TestIntegration:
         collab.cmd_poll(state, "b")
         collab.cmd_poll(state, "c")
 
+        time.sleep(0.02)  # ensure broadcast timestamp is strictly after last_poll
         collab.cmd_broadcast(state, "a", "System going down!")
 
         # b and c should see it
@@ -1822,7 +1823,7 @@ class TestClaudeMdSetup:
         # Should still have exactly 2 markers (one opening, one closing)
         assert content.count(launcher.COLLAB_MARKER) == 2
         # Should reflect the newer num_nodes
-        assert "5-node" in content
+        assert "1 of 5" in content
 
     def test_lite_tier(self, tmp_path):
         """Lite tier uses the simplified protocol section."""
@@ -1833,12 +1834,12 @@ class TestClaudeMdSetup:
         # Lite section should still have the marker pair
         assert content.count(launcher.COLLAB_MARKER) == 2
 
-    def test_full_tier_includes_lead_playbook(self, tmp_path):
-        """Full tier includes lead playbook and terminal control docs."""
+    def test_full_tier_includes_lead_instructions(self, tmp_path):
+        """Full tier includes lead behavior and terminal control docs."""
         import launcher
         launcher.setup_claude_md(tmp_path, tier="full")
         content = (tmp_path / "CLAUDE.md").read_text(encoding="utf-8")
-        assert "Lead Playbook" in content
+        assert "Lead" in content
         assert "inject" in content.lower()
 
     def test_preserves_content_before_and_after_marker(self, tmp_path):
@@ -1921,7 +1922,7 @@ class TestClaudeMdCleanup:
         launcher.setup_claude_md(tmp_path, num_nodes=4)
         injected = claude_md.read_text(encoding="utf-8")
         assert launcher.COLLAB_MARKER in injected
-        assert "4-node" in injected
+        assert "1 of 4" in injected
 
         # Cleanup
         collab.cmd_cleanup(state, project_dir=str(tmp_path))

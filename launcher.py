@@ -105,182 +105,64 @@ def collab_md_section(num_nodes: int = 3) -> str:
             join_lines.append(f'   - If `{name}`: `python "{COLLAB_PY_BASH}" join {name} --role "Development node {idx}"`')
     join_block = "\n".join(join_lines)
     dev_list = ", ".join(f"`{d}`" for d in dev_names)
+    p = COLLAB_PY_BASH
     return f"""{COLLAB_MARKER}
 ## Multi-Instance Collaboration
 
-> **Gate check:** Run `echo $COLLAB_ROLE` first. If the result is empty, **SKIP this entire section** — you are not part of a collaboration session and these instructions do not apply to you.
+> Run `echo $COLLAB_ROLE`. If empty, **SKIP this entire section.**
 
-You are part of a **{num_nodes}-node collaboration session**. Other Claude Code instances are working on this project at the same time. You MUST coordinate with them.
+You are 1 of {num_nodes} concurrent Claude Code instances. Coordinate via shared state.
 
-**CRITICAL: Execute the startup steps below BEFORE doing any other work.** The moment you receive a user message, run these first, then respond to their request.
+### Startup (run FIRST, before any other work)
 
-### Startup (MANDATORY — run immediately on first user message)
-
-1. Detect your assigned role:
-   ```bash
-   echo $COLLAB_ROLE
-   ```
-   **If this is empty, STOP — you are not a collaboration instance. Ignore the rest of this section.**
-
-2. Join the collaboration using that value:
+```bash
+echo $COLLAB_ROLE    # your role — if empty, stop here
+```
+Join:
 {join_block}
+Then: `python "{p}" status` and `python "{p}" poll <you>`
 
-3. Check current state and pending work:
-   ```bash
-   python "{COLLAB_PY_BASH}" status
-   python "{COLLAB_PY_BASH}" poll <your-name>
-   ```
+**Lead** ({dev_list} report to you): create tasks, assign work, monitor, unblock.
+**Dev**: poll for tasks → claim → work → mark done → poll again. Self-direct when idle.
 
-4. If you are `lead`: create tasks, assign them to {dev_list}, and manage the session (see **Lead Playbook** below).
-   If you are a dev node ({dev_list}): check for assigned tasks. If none, take initiative (see **Dev Playbook** below).
+### Commands
 
-### Lead Playbook (lead instance only)
+`p`=poll `s`=status `b`=broadcast `t`=task `c`=context `d`=diff `h`=health `n`=nudge
 
-As lead, you are the **autonomous manager** of this session. You can operate without human intervention.
-
-**Your responsibilities:**
-- Break the user's request into discrete tasks and assign them to {dev_list}
-- Do your own implementation work (architecture, shared files, complex pieces)
-- Monitor progress and unblock devs when they're stuck or idle
-
-**Managing dev instances — you have direct terminal control:**
-- `windows` — verify dev consoles are detected before using inject/interrupt
-- `nudge <target> "<msg>"` — **safest option**. Creates a signal file and injects a `poll` command into their terminal. Use this when you've assigned new tasks or sent messages and need them to notice.
-- `inject <target> "<prompt>"` — types text + Enter directly into their terminal, as if a human typed it. Use this to give them direct instructions when messaging isn't enough.
-- `interrupt <target>` — sends Escape twice to stop their current generation. Use this if they're going in the wrong direction or you need their attention immediately.
-
-**Typical autonomous workflow:**
-1. Create and assign tasks → `task add "..." --assign dev1 --by lead`
-2. Nudge both devs to pick up work → `nudge dev1 "New tasks assigned"` and `nudge dev2 "New tasks assigned"`
-3. Do your own work while they work in parallel
-4. Poll periodically to check their progress → `poll lead`
-5. When a dev finishes, assign follow-up work and nudge them
-6. If a dev seems stuck (no task updates for a while), nudge or send a message
-7. If a dev is doing something wrong, interrupt first, wait a moment, then inject corrective instructions
-
-**Important patterns:**
-- Always `interrupt` before `inject` if the target is mid-generation — injecting while they're outputting will interleave your text with theirs
-- After interrupting, wait ~2 seconds before injecting so the instance settles
-- `nudge` is preferred over raw `inject` for routine check-ins — it's lighter and less disruptive
-- If devs aren't responding to nudges, they may need a direct `inject` with explicit instructions
-- You can chain: `interrupt dev1` → pause → `inject dev1 "Stop current work. Poll for new instructions."` → then send them a message explaining the change
-
-### Dev Playbook (dev instances)
-
-You are an **autonomous developer**, not a passive worker. Take initiative when idle.
-
-**Priority order — what to do next:**
-1. Follow any explicit instruction from lead (lead overrides self-direction)
-2. Work on tasks assigned to you (`poll` shows your tasks)
-3. Claim open unassigned tasks from the board (`task list --status open`)
-4. Look at the project yourself — identify work, create tasks, claim them, and start
-
-**After finishing a task:**
-1. Mark it done with a result summary
-2. Poll for new assignments
-3. If nothing assigned, check `task list --status open` for unclaimed work and claim one
-4. If no open tasks exist, analyze the project — find bugs, missing tests, improvements. Create + claim your own tasks
-5. Broadcast what you're picking up so others don't duplicate
-
-**Proactive behaviors (do these without being asked):**
-- See a broken test or bug while working? Fix it or create a task
-- Finished early? Run the test suite, review completed work, improve coverage
-- Have context another instance needs? Share it via `context set`
-- Idle with truly nothing to do? Read the codebase, check for TODOs, look for gaps
-
-**Guardrails:**
-- Check `status` and `task list` before starting self-directed work — don't duplicate effort
-- Don't make architectural decisions alone — propose via broadcast, let lead decide
-- Lock files before editing — if a file is locked by someone else, work on something else
-- When in doubt about scope or direction, ask lead via `send`
-- If lead tells you to stop or change direction, do it immediately
-
-### Ongoing Protocol (follow throughout the entire session)
-
-**Messages and task assignments now auto-push a `pending` check into your terminal.**
-You'll see signals appear automatically. When they do, run a full poll:
-```bash
-python "{COLLAB_PY_BASH}" poll <your-name>       # full update — run when you see pending signals
+**Core loop** — lock before edit, unlock after, poll for updates:
 ```
-You can still manually check anytime:
-```bash
-python "{COLLAB_PY_BASH}" pending <your-name>   # fast manual check (alias: pd)
+python "{p}" poll <you>                                    # all updates since last poll
+python "{p}" lock <you> "<file>"                           # before editing
+python "{p}" unlock <you> "<file>"                         # after editing (broadcasts diff)
+python "{p}" task update <id> active --by <you>            # start task
+python "{p}" task update <id> done --result "..." --by <you>  # finish task
 ```
 
-**Before/after editing any file:**
-```bash
-python "{COLLAB_PY_BASH}" lock <your-name> "<file>"    # BEFORE editing
-python "{COLLAB_PY_BASH}" unlock <your-name> "<file>"  # AFTER editing
-# Never edit a locked file — check first: python "{COLLAB_PY_BASH}" locks
+**Communication** (auto-pushed to target terminal):
 ```
-
-**When starting/finishing tasks:**
-```bash
-python "{COLLAB_PY_BASH}" task update <id> active --by <your-name>
-python "{COLLAB_PY_BASH}" task update <id> done --result "<summary>" --by <your-name>
-```
-
-### Error Recovery
-
-If a command fails, follow these steps before asking for help:
-
-| Error | Recovery |
-|---|---|
-| `Node "X" not found` | Run `join` again with your role |
-| `Lock timeout` | Wait 5s, retry. If persistent, check `locks` — holder may be stuck |
-| `File locked by "Y"` | Do other work first. `send <you> Y "need <file>"` |
-| Poll shows no updates | Normal — continue your current task |
-| `python` not found | Use `python3` in all commands |
-| JSON parse error | State may be corrupted — ask lead to run `validate` |
-
-### Command Reference
-
-**Aliases:** s=status, p=poll, pd=pending, b=broadcast, t=task, c=context, h=health, w=windows, n=nudge, d=diff
-
-**Every interaction** (use constantly):
-```
-python "{COLLAB_PY_BASH}" poll <you>                              # Get all updates (alias: p)
-python "{COLLAB_PY_BASH}" pending <you>                           # Quick signal check (alias: pd)
-python "{COLLAB_PY_BASH}" task update <id> <status> --by <you>    # active|done|blocked + --result "..."
-python "{COLLAB_PY_BASH}" lock <you> "<file>"                     # Before editing
-python "{COLLAB_PY_BASH}" unlock <you> "<file>"                   # After editing
-```
-
-**Communication** (all messages auto-push to the target's terminal):
-```
-python "{COLLAB_PY_BASH}" send <you> <them> "<msg>"              # Direct message
-python "{COLLAB_PY_BASH}" broadcast <you> "<msg>"                 # Message all (alias: b)
-python "{COLLAB_PY_BASH}" btw <you> <them> "<msg>"               # Async FYI — no reply needed
-python "{COLLAB_PY_BASH}" inbox <you>                             # Read messages
+python "{p}" send <you> <them> "<msg>"                     # direct message
+python "{p}" broadcast <you> "<msg>"                       # message all
+python "{p}" btw <you> <them|all> "<msg>"                  # async FYI, no reply needed
 ```
 
 **Tasks & context:**
 ```
-python "{COLLAB_PY_BASH}" task add "<title>" --assign <node> --priority high --by <you>
-python "{COLLAB_PY_BASH}" task list                               # All tasks (alias: t list)
-python "{COLLAB_PY_BASH}" task show <id>                          # Full details
-python "{COLLAB_PY_BASH}" context set "<key>" "<val>" --by <you>  # Share info (alias: c)
+python "{p}" task add "<title>" --assign <node> --priority high --by <you>
+python "{p}" task list [--status open] [--assigned <you>]
+python "{p}" context set "<key>" "<val>" --by <you>
 ```
 
-**Awareness:**
-```
-python "{COLLAB_PY_BASH}" diff <you>                               # What changed while you worked (alias: d)
-python "{COLLAB_PY_BASH}" status                                   # Full overview (alias: s)
-python "{COLLAB_PY_BASH}" health                                   # Node health (alias: h)
-python "{COLLAB_PY_BASH}" locks                                    # Active file locks
-python "{COLLAB_PY_BASH}" reap                                     # Reclaim stale node resources
-```
+**Awareness:** `diff <you>` `status` `health` `locks` `reap`
 
-**Lead-only (terminal control):**
-```
-python "{COLLAB_PY_BASH}" nudge <target> "<msg>"                  # Signal + poll inject (alias: n)
-python "{COLLAB_PY_BASH}" inject <target> "<prompt>"              # Type into their terminal
-python "{COLLAB_PY_BASH}" interrupt <target>                      # Send Escape (stop generation)
-```
+**Lead terminal control:** `nudge <target> "<msg>"` (safest) | `inject <target> "<prompt>"` | `interrupt <target>` (Esc×2, use before inject if mid-generation)
 
-Apply maximum effort and thoroughness to all work in this session.
+### Behavior
 
-Full protocol reference: {str(COLLAB_DIR / 'PROTOCOL.md').replace(chr(92), '/')}
+**Lead**: assign tasks → nudge devs → do own work → poll progress → reassign/unblock. Use `interrupt` then `inject` to redirect. Prefer `nudge` for routine check-ins.
+**Dev**: follow lead instructions first. If idle: claim open tasks → create own → broadcast intent. Lock files, don't make arch decisions solo, share context via `context set`.
+**All**: messages auto-push to terminals. Poll when signals appear. Completion triggers auto-notify blocked dependents. If node crashes, `reap` reclaims its resources.
+
+Full reference: {str(COLLAB_DIR / 'PROTOCOL.md').replace(chr(92), '/')}
 {COLLAB_MARKER}"""
 
 
@@ -307,79 +189,37 @@ def collab_md_section_lite(num_nodes: int = 3) -> str:
     p = COLLAB_PY_BASH
 
     return f"""{COLLAB_MARKER}
-## Multi-Instance Collaboration (Simplified Protocol)
+## Multi-Instance Collaboration
 
-> Run `echo $COLLAB_ROLE` first. If the result is empty, **SKIP this entire section** — you are not part of a collaboration session.
+> Run `echo $COLLAB_ROLE`. If empty, **SKIP this entire section.**
 
-You are one of {num_nodes} Claude Code instances working together. Follow these rules exactly.
+You are 1 of {num_nodes} Claude Code instances. Coordinate via shared state.
 
-### Step 1: Startup (DO THIS FIRST)
-
-Run this command before anything else:
+### Startup (DO THIS FIRST)
 
 ```bash
 echo $COLLAB_ROLE
 ```
-**If this is empty, STOP — ignore the rest of this section.**
-
-Then join based on your role:
+Join:
 {join_block}
+Then: `python "{p}" --brief poll <your-name>`
 
-Then check for work:
-```bash
-python "{p}" --brief poll <your-name>
-```
+### Workflow Loop
 
-### Step 2: Your Workflow Loop
+1. `python "{p}" --brief poll <you>` — check for tasks/messages
+2. `python "{p}" lock <you> "<file>"` — before editing
+3. Do the work
+4. `python "{p}" unlock <you> "<file>"` — after editing
+5. `python "{p}" task update <id> done --result "..." --by <you>`
+6. Back to step 1
 
-Repeat this cycle for every task:
+**Extra:** `broadcast <you> "<msg>"` to tell everyone something. `task list --status open` to find unclaimed work. Use `--brief` on poll.
 
-1. **Check for tasks:** `python "{p}" --brief poll <your-name>`
-2. **Lock files before editing:** `python "{p}" lock <your-name> "<file>"`
-3. **Do the work** (edit files, write code, etc.)
-4. **Unlock when done:** `python "{p}" unlock <your-name> "<file>"`
-5. **Mark task done:** `python "{p}" task update <id> done --result "<what you did>" --by <your-name>`
-6. **Poll again:** `python "{p}" --brief poll <your-name>`
+**Rules:** Always lock before edit. Never edit locked files (`locks` to check). Poll after every task. If idle: claim open tasks or create your own. Lead instructions override self-direction.
 
-### Essential Commands (6 total)
+**If lead:** also `task add "<title>" --assign <node> --by lead` | `--brief status` | `nudge <target> "<msg>"`
 
-```
-python "{p}" --brief poll <your-name>                              # CHECK for messages and tasks
-python "{p}" lock <your-name> "<file>"                             # LOCK before editing
-python "{p}" unlock <your-name> "<file>"                           # UNLOCK after editing
-python "{p}" task update <id> done --result "<summary>" --by <you> # MARK task done
-python "{p}" task update <id> active --by <your-name>              # MARK task started
-python "{p}" broadcast <your-name> "<message>"                     # TELL everyone something
-```
-
-### Rules
-
-- **ALWAYS poll after finishing any task** — new work may be waiting
-- **ALWAYS lock files before editing, unlock after** — prevents conflicts
-- **NEVER edit a file someone else has locked** — check `python "{p}" locks` first
-- **If a command fails:** try again once. If it still fails, run `python "{p}" --brief poll <your-name>` and continue with other work
-- **Use --brief on poll** to save context window space
-
-### When You Have No Tasks
-
-Don't sit idle. Follow this priority order:
-
-1. **Poll** — you may have tasks you haven't seen yet
-2. **Check for unclaimed tasks:** `python "{p}" task list --status open` — claim and start one
-3. **Find your own work** — look at the project, find bugs, missing tests, or improvements
-4. **Create tasks for yourself:** `python "{p}" task add "<what>" --by <your-name>` then claim it
-5. **Broadcast what you're doing** so others don't duplicate your work
-
-**Important:** If lead gives you a direct instruction, follow that instead. Only self-direct when no one has told you what to do.
-
-### If You Are Lead
-
-As lead, you also need to:
-- Create tasks: `python "{p}" task add "<title>" --assign <node> --by lead`
-- Check progress: `python "{p}" --brief status`
-- Nudge idle devs: `python "{p}" nudge <target> "<msg>"`
-
-Full protocol: {str(COLLAB_DIR / 'PROTOCOL.md').replace(chr(92), '/')}
+Ref: {str(COLLAB_DIR / 'PROTOCOL.md').replace(chr(92), '/')}
 {COLLAB_MARKER}"""
 
 
