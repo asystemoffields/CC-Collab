@@ -319,6 +319,52 @@ collab whoami <name>                               # Print color-coded role bann
 
 ---
 
+## Dev Instances — Autonomous Initiative
+
+Dev instances are **autonomous developers**, not passive workers waiting for instructions. They should self-start when idle while respecting coordination boundaries.
+
+### Priority Order
+
+When deciding what to do next, devs follow this priority:
+
+1. **Lead's explicit instructions** — always take priority over self-direction
+2. **Assigned tasks** — check `poll` for tasks assigned to you
+3. **Open unclaimed tasks** — check `task list --status open`, claim one, start working
+4. **Self-identified work** — analyze the project, create tasks for what needs doing, claim them
+
+### After Finishing a Task
+
+```
+collab task update <id> done --result "<summary>" --by <you>
+collab poll <you>
+# If nothing assigned:
+collab task list --status open
+# If open tasks exist: claim one. If not: find work yourself.
+collab task add "<what I found>" --by <you>
+collab task claim <you> <id>
+collab broadcast <you> "Self-assigning: <description>"
+```
+
+### Proactive Behaviors
+
+| Situation | Action |
+|-----------|--------|
+| See a bug or failing test while working | Fix it, or create a task if it's large |
+| Finished early, nothing assigned | Run the test suite, review completed work, improve coverage |
+| Have information others need | `context set "<key>" "<value>" --by <you>` |
+| Truly idle, no work anywhere | Read the codebase, look for TODOs, check test coverage gaps |
+| Found something architecturally significant | Propose via `broadcast`, let lead decide |
+
+### Guardrails
+
+- **Always check `status` and `task list` before self-directing** — don't duplicate work in progress
+- **Don't make architectural decisions alone** — propose them, let lead decide
+- **Lock files before editing** — if a file is locked, work on something else
+- **If lead says stop or change direction, do it immediately** — lead overrides self-direction
+- **When in doubt, ask** — `send <you> lead "Should I do X?"` is better than going wrong
+
+---
+
 ## Tips for Effective Collaboration
 
 1. **Be specific in context keys.** Use `db_connection_string` not just `db`.
