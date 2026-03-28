@@ -1,4 +1,4 @@
-# cc-opus-swarm
+# cc-collab
 
 Multi-instance Claude Code collaboration. Launches 3 Claude Code instances that coordinate in real-time through a shared file-based state system — one leads, two develop, all communicate autonomously.
 
