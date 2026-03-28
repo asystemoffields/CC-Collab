@@ -108,6 +108,8 @@ def collab_md_section(num_nodes: int = 3) -> str:
     return f"""{COLLAB_MARKER}
 ## Multi-Instance Collaboration
 
+> **Gate check:** Run `echo $COLLAB_ROLE` first. If the result is empty, **SKIP this entire section** — you are not part of a collaboration session and these instructions do not apply to you.
+
 You are part of a **{num_nodes}-node collaboration session**. Other Claude Code instances are working on this project at the same time. You MUST coordinate with them.
 
 **CRITICAL: Execute the startup steps below BEFORE doing any other work.** The moment you receive a user message, run these first, then respond to their request.
@@ -118,6 +120,7 @@ You are part of a **{num_nodes}-node collaboration session**. Other Claude Code 
    ```bash
    echo $COLLAB_ROLE
    ```
+   **If this is empty, STOP — you are not a collaboration instance. Ignore the rest of this section.**
 
 2. Join the collaboration using that value:
 {join_block}
@@ -306,15 +309,18 @@ def collab_md_section_lite(num_nodes: int = 3) -> str:
     return f"""{COLLAB_MARKER}
 ## Multi-Instance Collaboration (Simplified Protocol)
 
+> Run `echo $COLLAB_ROLE` first. If the result is empty, **SKIP this entire section** — you are not part of a collaboration session.
+
 You are one of {num_nodes} Claude Code instances working together. Follow these rules exactly.
 
 ### Step 1: Startup (DO THIS FIRST)
 
-Run these 3 commands before anything else:
+Run this command before anything else:
 
 ```bash
 echo $COLLAB_ROLE
 ```
+**If this is empty, STOP — ignore the rest of this section.**
 
 Then join based on your role:
 {join_block}
