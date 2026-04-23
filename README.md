@@ -23,35 +23,70 @@ The launcher auto-injects collaboration instructions into the target project's `
 ```bash
 git clone https://github.com/asystemoffields/CC-Collab.git
 cd CC-Collab
-
-# Option A: double-click (3 nodes)
-launch.bat
-
-# Option B: command line — default 3 nodes
-python launcher.py "C:\path\to\your\project"
-
-# Option C: scale up — launch 5 nodes (1 lead + 4 devs)
-python launcher.py "C:\path\to\your\project" --nodes 5
+pip install -e .         # exposes the `ccollab` command on PATH
 ```
 
-Each window will show a color-coded role banner. Type `/effort max` in each, then describe your task to the lead instance (or just say "go" if the project context is self-explanatory). The lead will delegate work to dev1, dev2, etc. automatically.
+Three ways to launch:
+
+**Interactive wizard** — best for normal use. From any project directory:
+```bash
+cd /path/to/your/project
+ccollab
+```
+The wizard walks you through model selection (lead + subordinates separately), number of subordinates, role descriptions, and the lead's initial prompt. Tabs auto-open in one Windows Terminal window (or one tmux session on Linux), `/effort max` is auto-injected where supported, and your prompt is auto-typed into the lead.
+
+**Flag mode** — non-interactive, scriptable, also how the `/ccollab` skill calls it:
+```bash
+ccollab --lead-model opus --dev-model sonnet --devs 2 \
+        --lead-role "architect" \
+        --dev-role "backend" --dev-role "frontend" \
+        --prompt "build the auth flow" \
+        --yes
+```
+See `ccollab --help` for all flags.
+
+**Slash command from inside any Claude Code session** — install the skill and type `/ccollab` (or just describe the task you want a team to work on). See [Slash Command (skill)](#slash-command-skill) below.
+
+**Legacy single-flag invocation** still works for back-compat:
+```bash
+launch.bat                                    # double-click
+python launcher.py "/path/to/project" -n 5    # 5 nodes, no wizard
+```
 
 ## Configuration
 
 | Environment Variable | Default | Description |
 |---|---|---|
-| `COLLAB_MODEL` | `claude-opus-4-6` | Model ID passed to `claude --model` |
+| `COLLAB_MODEL` | `opus` | Default model when wizard/flag mode don't override (legacy single-model fallback) |
 | `COLLAB_SKIP_PERMISSIONS` | `1` | Set to `0` to require permission prompts |
 | `COLLAB_STATE_DIR` | `./state` | Directory for collaboration state files |
+
+## Slash Command (skill)
+
+A Claude Code skill ships with this repo at [`skills/ccollab/SKILL.md`](skills/ccollab/SKILL.md). Install it once and you can launch a multi-instance session from inside any other Claude Code session by typing `/ccollab` (or just describing what you want a team to work on).
+
+Install (user-level, available in all your projects):
+```bash
+# Linux/macOS
+mkdir -p ~/.claude/skills/ccollab
+cp skills/ccollab/SKILL.md ~/.claude/skills/ccollab/
+
+# Windows (PowerShell)
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.claude\skills\ccollab" | Out-Null
+Copy-Item skills/ccollab/SKILL.md "$env:USERPROFILE\.claude\skills\ccollab\"
+```
+
+The skill teaches Claude to gather any missing inputs from the conversation, then call `ccollab` in flag mode with `--yes`. Requires `pip install -e .` of this repo so `ccollab` is on PATH.
 
 ## Architecture
 
 ```
-launcher.py          Resets state, writes CLAUDE.md, opens N terminal windows
+launcher.py          Wizard, flag mode, state reset, CLAUDE.md write, N tab spawn
 collab.py            CLI tool used by each instance for all coordination
 inject.py            Cross-platform terminal injection (Win32, tmux, screen)
 test_collab.py       Comprehensive test suite
-pyproject.toml       pip install support (collab + claude-collab CLI entry points)
+pyproject.toml       pip install support (ccollab + collab CLI entry points)
+skills/ccollab/      User-installable Claude Code skill for /ccollab slash command
 state/
   nodes.json         Active instances and their roles
   messages.json      Direct and broadcast messages
