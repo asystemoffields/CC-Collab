@@ -27,6 +27,8 @@ classifiers = [
 
 [project.scripts]
 collab = "collab:main"
+ccollab = "launcher:main"
+# Legacy alias — prefer `ccollab`
 claude-collab = "launcher:main"
 
 [project.optional-dependencies]

@@ -72,7 +72,7 @@ def get_role_color(role_name: str) -> dict:
     return _DEV_COLORS[idx % len(_DEV_COLORS)]
 
 
-CLAUDE_MODEL = os.environ.get("COLLAB_MODEL", "claude-opus-4-6")
+CLAUDE_MODEL = os.environ.get("COLLAB_MODEL", "opus")
 SKIP_PERMISSIONS = os.environ.get("COLLAB_SKIP_PERMISSIONS", "1") == "1"
 
 # Model capability tier: "full" for Opus, "lite" for Haiku/Sonnet
@@ -82,6 +82,18 @@ COLLAB_TIER = os.environ.get("COLLAB_TIER", "auto")  # auto|full|lite
 
 COLLAB_MARKER = "<!-- COLLAB:AUTO -->"
 
+# Wizard model menu — bare aliases at top stay current automatically;
+# pinned IDs below for determinism. Edit when new families ship.
+MODEL_MENU = [
+    ("opus",       "Latest Opus (recommended)"),
+    ("sonnet",     "Latest Sonnet"),
+    ("haiku",      "Latest Haiku  [no /effort support]"),
+    ("claude-opus-4-7",          "Opus 4.7 (pinned)"),
+    ("claude-opus-4-6",          "Opus 4.6 (pinned)"),
+    ("claude-sonnet-4-6",        "Sonnet 4.6 (pinned)"),
+    ("claude-haiku-4-5-20251001","Haiku 4.5 (pinned)"),
+]
+
 
 def _detect_tier(model: str) -> str:
     """Detect capability tier from model name."""
@@ -90,6 +102,18 @@ def _detect_tier(model: str) -> str:
         return "full"
     # Sonnet and Haiku get the simplified protocol
     return "lite"
+
+
+def _session_tier(lead_model: str, dev_model: str) -> str:
+    """Tier for a mixed-model session — weakest reader wins."""
+    if _detect_tier(lead_model) == "lite" or _detect_tier(dev_model) == "lite":
+        return "lite"
+    return "full"
+
+
+def _supports_effort(model: str) -> bool:
+    """Haiku does not support /effort; everything else (opus/sonnet) does."""
+    return "haiku" not in model.lower()
 
 
 def collab_md_section(num_nodes: int = 3) -> str:
@@ -166,7 +190,22 @@ Full reference: {str(COLLAB_DIR / 'PROTOCOL.md').replace(chr(92), '/')}
 {COLLAB_MARKER}"""
 
 
-def collab_md_section_lite(num_nodes: int = 3) -> str:
+_LEAD_PLAYBOOK_BLOCK = """
+### Lead playbook (full tier — only the lead reads this)
+
+You are the autonomous manager. Loop:
+
+1. Plan: break the user's request into tasks; assign to dev1/dev2/...
+2. Build your own piece (architecture, shared files, the hard part)
+3. Monitor: `poll lead` and `task list` regularly
+4. Steer: if a dev drifts, `interrupt <them>` (Esc x2), wait ~2s, then `inject <them> "Stop. Do X instead."`
+5. Nudge: when assigning new work, `nudge <target> "<msg>"` so they notice without interrupting
+
+Terminal control: `nudge` (safest) | `inject` (types text + Enter) | `interrupt` (Esc x2). Always `interrupt` before `inject` if the target is mid-generation. Never `inject` while a dev holds a file lock.
+"""
+
+
+def collab_md_section_lite(num_nodes: int = 3, with_lead_playbook: bool = False) -> str:
     """Generate a simplified CLAUDE.md block for less capable models (Haiku/Sonnet).
 
     Key differences from full tier:
@@ -187,6 +226,8 @@ def collab_md_section_lite(num_nodes: int = 3) -> str:
             join_lines.append(f'   - If `{name}`: `python "{COLLAB_PY_BASH}" join {name} --role "Developer {idx}"`')
     join_block = "\n".join(join_lines)
     p = COLLAB_PY_BASH
+
+    lead_section = _LEAD_PLAYBOOK_BLOCK if with_lead_playbook else ""
 
     return f"""{COLLAB_MARKER}
 ## Multi-Instance Collaboration
@@ -218,7 +259,7 @@ Then: `python "{p}" --brief poll <your-name>`
 **Rules:** Always lock before edit. Never edit locked files (`locks` to check). Poll after every task. If idle: claim open tasks or create your own. Lead instructions override self-direction.
 
 **If lead:** also `task add "<title>" --assign <node> --by lead` | `--brief status` | `nudge <target> "<msg>"`
-
+{lead_section}
 Ref: {str(COLLAB_DIR / 'PROTOCOL.md').replace(chr(92), '/')}
 {COLLAB_MARKER}"""
 
@@ -255,14 +296,21 @@ def pre_trust_directory(project_dir: Path):
         print(f"  You may need to accept the trust dialog manually in each window.")
 
 
-def setup_claude_md(project_dir: Path, num_nodes: int = 3, tier: str = "full"):
+def setup_claude_md(project_dir: Path, num_nodes: int = 3, tier: str = "full",
+                    lead_model: str | None = None):
     """Create or update CLAUDE.md with collaboration instructions.
-    Saves a backup of the original content so cleanup can restore it."""
+    Saves a backup of the original content so cleanup can restore it.
+
+    `lead_model` is used only when `tier == "lite"` — if the lead is a full-tier
+    model in an otherwise lite session, the rich lead playbook is appended so the
+    lead has the management instructions Haiku/Sonnet devs don't need.
+    """
     claude_md = project_dir / "CLAUDE.md"
     backup = STATE_DIR / _BACKUP_NAME
 
     if tier == "lite":
-        section = collab_md_section_lite(num_nodes)
+        with_lead = lead_model is not None and _detect_tier(lead_model) == "full"
+        section = collab_md_section_lite(num_nodes, with_lead_playbook=with_lead)
     else:
         section = collab_md_section(num_nodes)
 
@@ -335,7 +383,12 @@ def reset_state():
     print(f"  {result.stdout.strip()}")
 
 
-def _launch_windows(project_dir: Path, role_name: str):
+# Named WT window \u2014 every collab tab is added to this window so the
+# session is one window with N tabs instead of N separate windows.
+WT_WINDOW_NAME = "collab"
+
+
+def _launch_windows(project_dir: Path, role_name: str, model: str):
     """Launch one Claude Code instance in a Windows console."""
     bat = STATE_DIR / f"_run_{role_name}.bat"
     STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -353,22 +406,22 @@ def _launch_windows(project_dir: Path, role_name: str):
         # Print colored role banner
         f'echo.\r\n'
         f'echo {esc}{colors["fg"]}{bar}{esc}[0m\r\n'
-        f'echo {esc}{colors["fg"]}  {colors["icon"]}  {label}  {colors["icon"]}{esc}[0m\r\n'
+        f'echo {esc}{colors["fg"]}  {colors["icon"]}  {label}  {colors["icon"]}  ({model}){esc}[0m\r\n'
         f'echo {esc}{colors["fg"]}{bar}{esc}[0m\r\n'
         f'echo.\r\n'
         f'set "COLLAB_ROLE={role_name}"\r\n'
         f'cd /d "{project_dir}"\r\n'
-        f'claude --model {CLAUDE_MODEL}{" --dangerously-skip-permissions" if SKIP_PERMISSIONS else ""}\r\n',
+        f'claude --model {model}{" --dangerously-skip-permissions" if SKIP_PERMISSIONS else ""}\r\n',
         encoding="utf-8",
     )
-    # Try Windows Terminal (persistent tab titles + colors that survive
-    # Claude Code overriding the console title). Fall back to plain `start`.
+    # Try Windows Terminal with a named window so all tabs land together.
+    # `wt -w <name> nt` opens (or focuses) that named window and adds a tab to it.
     tab_title = role_name.upper().replace("DEV", "DEV ")
     tab_color = colors["tab"]
     wt_available = shutil.which("wt") is not None
     if wt_available:
         subprocess.Popen(
-            f'wt new-tab --title "{tab_title}" --tabColor "{tab_color}" cmd /k "{bat}"',
+            f'wt -w {WT_WINDOW_NAME} nt --title "{tab_title}" --tabColor "{tab_color}" cmd /k "{bat}"',
             shell=True,
         )
     else:
@@ -378,7 +431,7 @@ def _launch_windows(project_dir: Path, role_name: str):
         )
 
 
-def _launch_unix_tmux(project_dir: Path, role_name: str, session_name: str = "collab"):
+def _launch_unix_tmux(project_dir: Path, role_name: str, model: str, session_name: str = "collab"):
     """Launch one Claude Code instance in a tmux window."""
     sh = STATE_DIR / f"_run_{role_name}.sh"
     STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -386,7 +439,7 @@ def _launch_unix_tmux(project_dir: Path, role_name: str, session_name: str = "co
     colors = get_role_color(role_name)
     label = role_name.upper().replace("DEV", "DEV ")
     bar = "\u2550" * 48
-    claude_flags = f"--model {CLAUDE_MODEL}"
+    claude_flags = f"--model {model}"
     if SKIP_PERMISSIONS:
         claude_flags += " --dangerously-skip-permissions"
 
@@ -397,7 +450,7 @@ def _launch_unix_tmux(project_dir: Path, role_name: str, session_name: str = "co
         f'cd "{project_dir}"\n'
         f'echo\n'
         f'echo -e "\\033{colors["fg"]}{bar}\\033[0m"\n'
-        f'echo -e "\\033{colors["fg"]}  {colors["icon"]}  {label}  {colors["icon"]}\\033[0m"\n'
+        f'echo -e "\\033{colors["fg"]}  {colors["icon"]}  {label}  {colors["icon"]}  ({model})\\033[0m"\n'
         f'echo -e "\\033{colors["fg"]}{bar}\\033[0m"\n'
         f'echo\n'
         f'claude {claude_flags}\n',
@@ -425,7 +478,7 @@ def _launch_unix_tmux(project_dir: Path, role_name: str, session_name: str = "co
         )
 
 
-def _launch_unix_terminal(project_dir: Path, role_name: str):
+def _launch_unix_terminal(project_dir: Path, role_name: str, model: str):
     """Launch one Claude Code instance in a new terminal emulator window (no tmux)."""
     sh = STATE_DIR / f"_run_{role_name}.sh"
     STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -433,7 +486,7 @@ def _launch_unix_terminal(project_dir: Path, role_name: str):
     colors = get_role_color(role_name)
     label = role_name.upper().replace("DEV", "DEV ")
     bar = "\u2550" * 48
-    claude_flags = f"--model {CLAUDE_MODEL}"
+    claude_flags = f"--model {model}"
     if SKIP_PERMISSIONS:
         claude_flags += " --dangerously-skip-permissions"
 
@@ -443,7 +496,7 @@ def _launch_unix_terminal(project_dir: Path, role_name: str):
         f'cd "{project_dir}"\n'
         f'echo\n'
         f'echo -e "\\033{colors["fg"]}{bar}\\033[0m"\n'
-        f'echo -e "\\033{colors["fg"]}  {colors["icon"]}  {label}  {colors["icon"]}\\033[0m"\n'
+        f'echo -e "\\033{colors["fg"]}  {colors["icon"]}  {label}  {colors["icon"]}  ({model})\\033[0m"\n'
         f'echo -e "\\033{colors["fg"]}{bar}\\033[0m"\n'
         f'echo\n'
         f'claude {claude_flags}\n',
@@ -475,14 +528,79 @@ def _launch_unix_terminal(project_dir: Path, role_name: str):
         print(f"         Run manually: {sh}")
 
 
-def launch_instance(project_dir: Path, role_name: str):
+def inject_startup(role_models: dict, lead_prompt: str | None,
+                   pid_timeout: float = 20.0, settle_after_pid: float = 6.0):
+    """After tabs are open, inject `/effort max` (where supported) into each tab,
+    and the user's prompt into lead. Best-effort — prints fallback if injection fails.
+
+    role_models: {"lead": "opus", "dev1": "sonnet", ...}
+    lead_prompt: text to send to lead after /effort max, or None to skip.
+    """
+    try:
+        from inject import get_backend
+    except Exception as e:
+        print(f"  [WARN] Could not import injection backend: {e}")
+        print(f"  Type `/effort max` in each window manually.")
+        return
+
+    backend = get_backend()
+    if backend is None:
+        print("  [WARN] No injection backend available. Type `/effort max` manually in each window.")
+        return
+
+    # Poll for all roles' PIDs to appear
+    needed = set(role_models.keys())
+    deadline = time.time() + pid_timeout
+    found = {}
+    while time.time() < deadline and needed:
+        sessions = backend.list_sessions()
+        for role in list(needed):
+            if role in sessions:
+                found[role] = sessions[role]
+                needed.remove(role)
+        if needed:
+            time.sleep(0.5)
+
+    if needed:
+        print(f"  [WARN] Couldn't find sessions for: {', '.join(sorted(needed))}")
+        print(f"  Type `/effort max` in those windows manually.")
+
+    if not found:
+        return
+
+    # Let Claude Code finish booting and reach the prompt
+    print(f"  Waiting {settle_after_pid:.0f}s for Claude Code to reach input prompt...")
+    time.sleep(settle_after_pid)
+
+    # Inject /effort max where the model supports it
+    for role in sorted(found.keys(), key=lambda r: (r != "lead", r)):
+        model = role_models.get(role, "")
+        if _supports_effort(model):
+            ok = backend.inject(role, "/effort max")
+            print(f"    {role:<8} /effort max -> {'OK' if ok else 'FAILED'}")
+            time.sleep(0.4)
+        else:
+            print(f"    {role:<8} skipped /effort (Haiku doesn't support it)")
+
+    # Inject lead's prompt
+    if lead_prompt and "lead" in found:
+        time.sleep(0.6)
+        ok = backend.inject("lead", lead_prompt)
+        if ok:
+            print(f"    lead     prompt injected ({len(lead_prompt)} chars)")
+        else:
+            print(f"    lead     [WARN] prompt injection failed — paste manually:")
+            print(f"             {lead_prompt}")
+
+
+def launch_instance(project_dir: Path, role_name: str, model: str):
     """Launch one Claude Code instance — auto-detects platform."""
     if sys.platform == "win32":
-        _launch_windows(project_dir, role_name)
+        _launch_windows(project_dir, role_name, model)
     elif shutil.which("tmux"):
-        _launch_unix_tmux(project_dir, role_name)
+        _launch_unix_tmux(project_dir, role_name, model)
     else:
-        _launch_unix_terminal(project_dir, role_name)
+        _launch_unix_terminal(project_dir, role_name, model)
 
 
 def _read_session_state() -> dict:
@@ -561,7 +679,7 @@ def resume_session(project_dir: Path, tier: str):
     # Re-launch terminals
     print(f"\n  Re-launching {num_nodes} instance(s)...\n")
     for i, role_name in enumerate(role_names):
-        launch_instance(project_dir, role_name)
+        launch_instance(project_dir, role_name, CLAUDE_MODEL)
         desc = nodes[role_name].get("role", "")
         print(f"    {role_name:<8} {desc}")
         if i < num_nodes - 1:
@@ -586,6 +704,163 @@ def resume_session(project_dir: Path, tier: str):
 """)
 
 
+# ══════════════════════════════════════════════════════════════
+#  Interactive Wizard
+# ══════════════════════════════════════════════════════════════
+
+def _ask(prompt: str, default: str | None = None) -> str:
+    """Prompt the user; show default in brackets; return stripped input or default."""
+    suffix = f" [{default}]" if default else ""
+    raw = input(f"  {prompt}{suffix}: ").strip()
+    return raw if raw else (default or "")
+
+
+def _ask_int(prompt: str, default: int, minimum: int = 1) -> int:
+    while True:
+        raw = _ask(prompt, str(default))
+        try:
+            n = int(raw)
+            if n < minimum:
+                print(f"    Must be >= {minimum}")
+                continue
+            return n
+        except ValueError:
+            print(f"    Not a number: {raw!r}")
+
+
+def _pick_model(prompt: str, default_id: str = "opus") -> str:
+    """Show MODEL_MENU + custom option, return chosen model ID."""
+    print(f"\n  {prompt}")
+    for i, (mid, label) in enumerate(MODEL_MENU, 1):
+        marker = " *" if mid == default_id else "  "
+        print(f"   {marker}{i}) {mid:<28} {label}")
+    print(f"     {len(MODEL_MENU)+1}) custom...                    type any model ID")
+
+    while True:
+        raw = input(f"\n    pick [default {default_id}]: ").strip()
+        if not raw:
+            return default_id
+        try:
+            n = int(raw)
+            if 1 <= n <= len(MODEL_MENU):
+                return MODEL_MENU[n - 1][0]
+            if n == len(MODEL_MENU) + 1:
+                custom = input("    enter model ID: ").strip()
+                if custom:
+                    return custom
+                continue
+        except ValueError:
+            pass
+        # Allow typing a model ID directly
+        if raw:
+            return raw
+
+
+def run_wizard(initial_project_dir: Path | None = None):
+    """Interactive launcher. Collects model + role choices, then launches."""
+    print()
+    print("=" * 52)
+    print("   ccollab — interactive launch wizard")
+    print("=" * 52)
+    print()
+
+    # 0. Project directory
+    default_proj = str(initial_project_dir or Path.cwd())
+    proj_raw = _ask("Project directory", default_proj).strip('"').strip("'")
+    project_dir = Path(proj_raw).resolve()
+    if not project_dir.is_dir():
+        print(f"  [ERROR] Not a directory: {project_dir}")
+        sys.exit(1)
+
+    # 1 + 2. Lead and subordinate models
+    lead_model = _pick_model("Lead model", default_id="opus")
+    dev_model  = _pick_model("Subordinate model (applied to all devs)", default_id=lead_model)
+
+    # 3. Number of subordinates (so total nodes = devs + 1)
+    print()
+    num_devs = _ask_int("How many subordinates?", default=2, minimum=1)
+    num_nodes = num_devs + 1
+
+    # 4. Lead role (free text)
+    print()
+    lead_role = _ask("Lead role (free text)",
+                     default="Coordination, architecture, and task management")
+
+    # 5. Per-dev roles (free text)
+    print()
+    dev_roles = []
+    for i in range(1, num_devs + 1):
+        suggested = "Primary implementation" if i == 1 else \
+                    "Review and testing"     if i == 2 else \
+                    f"Development node {i}"
+        role = _ask(f"Role for dev{i}", default=suggested)
+        dev_roles.append(role)
+
+    # 6. Lead prompt
+    print()
+    print("  Lead prompt — what should the session start working on?")
+    print("  (Single line. Press Enter on an empty prompt to skip auto-injection.)")
+    lead_prompt = input("  > ").strip()
+
+    # ── Confirm ──
+    print()
+    print("  -- Launch summary --")
+    print(f"    project   : {project_dir}")
+    print(f"    lead      : {lead_model}    role: {lead_role}")
+    print(f"    devs ({num_devs}) : {dev_model}")
+    for i, r in enumerate(dev_roles, 1):
+        print(f"      dev{i}    role: {r}")
+    if lead_prompt:
+        preview = lead_prompt if len(lead_prompt) < 70 else lead_prompt[:67] + "..."
+        print(f"    prompt    : {preview}")
+    else:
+        print(f"    prompt    : (none — type manually in lead window)")
+    print()
+    confirm = _ask("Proceed? [Y/n]", "y").lower()
+    if confirm not in ("", "y", "yes"):
+        print("  Aborted.")
+        sys.exit(0)
+
+    # ── Launch ──
+    role_models = {"lead": lead_model}
+    for i in range(1, num_devs + 1):
+        role_models[f"dev{i}"] = dev_model
+
+    role_descs = [("lead", lead_role)] + [(f"dev{i+1}", dev_roles[i]) for i in range(num_devs)]
+
+    tier = _session_tier(lead_model, dev_model)
+    print(f"\n  Tier:    {tier} ({'simplified protocol' if tier == 'lite' else 'full protocol'})")
+    if tier == "lite" and _detect_tier(lead_model) == "full":
+        print("           (lead playbook appended for Opus lead in mixed session)")
+
+    print("\n  Resetting collaboration state...")
+    reset_state()
+
+    pre_trust_directory(project_dir)
+    print("  Configuring CLAUDE.md...")
+    setup_claude_md(project_dir, num_nodes, tier, lead_model=lead_model)
+
+    print(f"\n  Launching {num_nodes} instance(s) into one tabbed window...\n")
+    for i, (name, desc) in enumerate(role_descs):
+        launch_instance(project_dir, name, role_models[name])
+        print(f"    {name:<8} ({role_models[name]})  {desc}")
+        if i < len(role_descs) - 1:
+            time.sleep(2)
+
+    print(f"\n  All tabs requested. Polling for sessions to inject startup...")
+    inject_startup(role_models, lead_prompt or None)
+
+    print(f"""
+  ==========================================
+     Session is live ({num_nodes} tabs in window "{WT_WINDOW_NAME}")
+  ==========================================
+
+  State dir: {STATE_DIR}
+  Stop:      ccollab --stop
+  Resume:    ccollab --resume
+""")
+
+
 def main():
     import argparse as _ap
     parser = _ap.ArgumentParser(
@@ -602,7 +877,20 @@ def main():
                         help="Clean up: remove collab instructions from CLAUDE.md and reset state")
     parser.add_argument("--resume", action="store_true",
                         help="Resume a previous session — re-launch terminals, preserve state")
+    parser.add_argument("--no-wizard", action="store_true",
+                        help="Skip the interactive wizard even when no flags are given (use legacy flow)")
     args = parser.parse_args()
+
+    # ── Wizard mode: default when invoked with no flags / no nodes override ──
+    invoked_bare = (
+        not args.stop and not args.resume and not args.no_wizard
+        and "--nodes" not in sys.argv and "-n" not in sys.argv
+        and args.tier is None
+    )
+    if invoked_bare:
+        initial = Path(args.project_dir).resolve() if args.project_dir else None
+        run_wizard(initial)
+        return
 
     # ── Resume mode: re-launch without resetting ──
     if args.resume:
@@ -675,7 +963,7 @@ def main():
     # ── Step 3: Launch N instances ──
     print(f"\n  Launching {num_nodes} instances...\n")
     for i, (name, desc) in enumerate(roles):
-        launch_instance(project_dir, name)
+        launch_instance(project_dir, name, CLAUDE_MODEL)
         print(f"    {name:<8} {desc}")
         if i < len(roles) - 1:
             time.sleep(2)  # Stagger to avoid lock contention on startup
